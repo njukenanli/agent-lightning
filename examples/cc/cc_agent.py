@@ -19,6 +19,7 @@ from utils.custom_callbacks import AddLogprobs, AddTemperature
 from utils.evaluation import evaluate
 from utils.logger import logger
 from utils.type import AgentResult, ClaudeCodeStep
+from utils.reward import RewardEstimatorWholeSlice
 
 from agentlightning import (
     InMemoryLightningStore,
@@ -44,13 +45,6 @@ def load_dataset(path: str = "swe_debug.jsonl", epoch: int = 0, limit: Optional[
         instances = instances[:limit]
     return instances
 
-
-def store_result_local(result: dict[str, Any]) -> None:
-    instance_id: str = result["instance_id"]
-    os.makedirs("result", exist_ok=True)
-    with open(os.path.join("result", f"{instance_id}.json"), "w") as f:
-        json.dump(result,f,indent=True)
-    return
 
 class CodingAgent(LitAgent):
     def __init__(
@@ -118,9 +112,6 @@ class CodingAgent(LitAgent):
             # 2. execute task
             prediction: AgentResult = controller.run_instance(task, max_step=self.max_step, run_method=self.run_method)
             logger(run_id, task["instance_id"], json.dumps(prediction, indent=4))
-            # Under development: Intermediate Reward
-            # intermediate_reward_list: list[tuple[ClaudeCodeStep, float]] = controller.calculate_intermediate_rewards_per_slice(task["patch"],  prediction["model_patch"], prediction["reproduction_file"], prediction["trajectory"])
-            del controller
         except Exception as e:
             logger(run_id, task["instance_id"], f"Exception during rollout: {e}")
             return reward
@@ -128,10 +119,14 @@ class CodingAgent(LitAgent):
         # 3. obtain rewards (evaluation result)
         # empty patch
         if prediction["model_patch"] in ["", None]:
-            store_result_local({
-                **prediction,
-                "success": reward,
-            })
+            intermediate_reward: RewardEstimatorWholeSlice.ReturnType = RewardEstimatorWholeSlice.intermediate_reward(
+                prediction,
+                controller.container,
+                task["patch"],
+                task.get('epoch', 0)
+            )
+            # todo: how to send intermediate_reward to GPU side?
+            del controller
             return reward
 
         instance_id = prediction["instance_id"]
@@ -150,16 +145,29 @@ class CodingAgent(LitAgent):
 
         # error patch
         if result is None:
+            intermediate_reward: RewardEstimatorWholeSlice.ReturnType = RewardEstimatorWholeSlice.intermediate_reward(
+                prediction,
+                controller.container,
+                task["patch"],
+                task.get('epoch', 0)
+            )
+            del controller
             return reward
 
         report = result[1]
         # resolved/unresolved patch
         if report[instance_id]["resolved"]:
             reward = 1.0
-        store_result_local({
-            **prediction,
-            "success": reward,
-        })
+            prediction["success"] = 1.0
+        
+        intermediate_reward: RewardEstimatorWholeSlice.ReturnType = RewardEstimatorWholeSlice.intermediate_reward(
+            prediction,
+            controller.container,
+            task["patch"],
+            task.get('epoch', 0)
+        )
+        # todo: how to send intermediate_reward to GPU side?
+        del controller
         return reward
 
     def _strip_proxy_helper(self, proxy_llm: LLM, rollout: Rollout) -> LLM:

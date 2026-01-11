@@ -123,6 +123,7 @@ fi
             "reproduction_file": reproduction_file,
             "model_name_or_path": "cc",
             "trajectory": traj,
+            "success": 0.0,
         }
         return return_value
 

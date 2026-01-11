@@ -71,7 +71,7 @@ class ClaudeCodeMessage(TypedDict):
 
 class ClaudeCodeStep(TypedDict):
     type: str
-    message: ClaudeCodeMessage
+    message: Optional[ClaudeCodeMessage]
     parent_tool_use_id: Optional[str | None]
 
 
@@ -83,6 +83,7 @@ ClaudeCodeTraj = list[ClaudeCodeStep]
 class AgentResult(SWEbenchInput):
     trajectory: ClaudeCodeTraj
     reproduction_file: str
+    success: float
 
 
 class TrajSlice(TypedDict):
