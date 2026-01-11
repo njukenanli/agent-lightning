@@ -45,6 +45,13 @@ def load_dataset(path: str = "swe_debug.jsonl", epoch: int = 0, limit: Optional[
     return instances
 
 
+def store_result_local(result: dict[str, Any]) -> None:
+    instance_id: str = result["instance_id"]
+    os.makedirs("result", exist_ok=True)
+    with open(os.path.join("result", f"{instance_id}.json"), "w") as f:
+        json.dump(result,f,indent=True)
+    return
+
 class CodingAgent(LitAgent):
     def __init__(
         self,
@@ -121,6 +128,10 @@ class CodingAgent(LitAgent):
         # 3. obtain rewards (evaluation result)
         # empty patch
         if prediction["model_patch"] in ["", None]:
+            store_result_local({
+                **prediction,
+                "success": reward,
+            })
             return reward
 
         instance_id = prediction["instance_id"]
@@ -145,6 +156,10 @@ class CodingAgent(LitAgent):
         # resolved/unresolved patch
         if report[instance_id]["resolved"]:
             reward = 1.0
+        store_result_local({
+            **prediction,
+            "success": reward,
+        })
         return reward
 
     def _strip_proxy_helper(self, proxy_llm: LLM, rollout: Rollout) -> LLM:

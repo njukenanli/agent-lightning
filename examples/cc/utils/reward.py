@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 from difflib import SequenceMatcher
-from typing import TypedDict
+import os
+from typing import Any, TypedDict
+import uuid
 
 import unidiff
 from utils.docker_runtime import CommandResult, Runtime
@@ -127,8 +129,8 @@ class RewardEstimatorWholeSlice:
         "Localization": "{ -1 } | (0, 1]",
         "Reproduction": "{ -1, 1 }",
         "Edit": "[-1, 1]",
-        "Validation": "{ 1 }",
-        "Result": "{ -1, 1 }",
+        "Validation": "{ 0.5 }",
+        "Result": "{ -1, -0.5, 0.5 }",
         "InvalidToolCall": "{ -1 }",
     }
 
@@ -142,6 +144,11 @@ class RewardEstimatorWholeSlice:
         traj: TrajSlice
         keysteps: ClaudeCodeTraj
         reward: float  # [-1.0 , 1.0] in practice
+
+    class ReturnType(TypedDict):
+        steps: list[tuple[ClaudeCodeStep, float]]
+        slices: list[RewardEstimatorWholeSlice.RewardReturnType]
+        overall: dict[str, float]
 
     def __init__(self, container: Runtime, reproduction_file: str, solution_patch: str, gold_patch: str):
 
@@ -161,9 +168,6 @@ class RewardEstimatorWholeSlice:
                 self.total_lines_gold_patch += loc["end"] - loc["start"]
                 self.sorted_added_lines += "\n".join(loc["added_lines"]) + "\n"
         self.container.send_command("git stash; git reset --hard HEAD;")
-        self.container.send_command(
-            """perl -v &> /dev/null || (if command -v apt-get &> /dev/null; then apt-get update && apt-get install -y perl; elif command -v yum &> /dev/null; then yum install -y perl; elif command -v dnf &> /dev/null; then dnf install -y perl; elif command -v apk &> /dev/null; then apk add perl; elif command -v pacman &> /dev/null; then pacman -S --noconfirm perl; else echo "No supported package manager found" && exit 1; fi)"""
-        )
 
     @property
     def current_patch(self) -> str:
@@ -186,37 +190,37 @@ class RewardEstimatorWholeSlice:
         return self.container.send_command(f"""git apply - <<'NEW_PATCH'\n{patch}\nNEW_PATCH""").metadata.exit_code == 0
 
     def string_replace(self, file_path: str, old_string: str, new_string: str) -> bool:
-        # The old_string / new_string could be multi lines with special characters.
-        # Use Perl for robust string replacement with special character handling
-
-        # Escape file path for shell single quotes (bash/sh safe)
-        # In single quotes, only ' needs escaping as '\''
-        file_escaped = file_path.replace("'", "'\\''")
-
-        # Base64 encode the strings to safely pass them through shell and Perl
-        # This handles ALL special characters including quotes, newlines, brackets, etc.
-
-        old_b64 = base64.b64encode(old_string.encode("utf-8")).decode("ascii")
-        new_b64 = base64.b64encode(new_string.encode("utf-8")).decode("ascii")
-
-        # Use Perl with -i for in-place editing and -0777 to slurp entire file
-        # Decode base64 strings in Perl, then use \Q...\E to quote regex metacharacters
-        # The replacement uses quotemeta on the decoded new string to escape special chars
-        cmd = (
-            f"perl -i -0777 -MMIME::Base64 -pe '"
-            f"BEGIN{{"
-            f"  use MIME::Base64;"
-            f"  $old = decode_base64(q/{old_b64}/);"
-            f"  $new = decode_base64(q/{new_b64}/);"
-            f"}} "
-            f"s/\\Q$old\\E/$new/s' '{file_escaped}'"
-        )
-
-        result: CommandResult = self.container.send_command(cmd)
-        status = int(result.metadata.exit_code) == 0
-        if not status:
-            print(result.output)
-        return status
+        old_file_name = f"{uuid.uuid4()}.txt"
+        new_file_name = f"{uuid.uuid4()}.txt"
+        script_name = f"{uuid.uuid4()}.py"
+        script = f"""
+with open("/testbed/mnt_tmp/{old_file_name}", encoding="utf-8") as f:
+    old_string = f.read()
+with open("/testbed/mnt_tmp/{new_file_name}", encoding="utf-8") as f:
+    new_string = f.read()
+with open("{file_path}", encoding="utf-8") as f:
+    file_content = f.read()
+if old_string not in file_content:
+    raise ValueError(f"Old string not found!")
+file_content = file_content.replace(old_string, new_string)
+with open("{file_path}", "w", encoding="utf-8") as f:
+    f.write(file_content)
+"""
+        with open(os.path.join(os.getcwd(), "logs", "tmp", old_file_name), "w") as f:
+            f.write(old_string)
+        with open(os.path.join(os.getcwd(), "logs", "tmp", new_file_name), "w") as f:
+            f.write(new_string)
+        with open(os.path.join(os.getcwd(), "logs", "tmp", script_name), "w") as f:
+            f.write(script)
+        res = self.container.send_command(f"python /testbed/mnt_tmp/{script_name}")
+        self.container.send_command(f"rm -f /testbed/mnt_tmp/{old_file_name}")
+        self.container.send_command(f"rm -f /testbed/mnt_tmp/{new_file_name}")
+        self.container.send_command(f"rm -f /testbed/mnt_tmp/{script_name}")
+        if res.metadata.exit_code == 0:
+            return True
+        else:
+            #print(res.output)
+            return False
 
     @staticmethod
     def _parse_patch(patch: str) -> dict[str, list[ParsedPatch]]:
@@ -284,6 +288,8 @@ class RewardEstimatorWholeSlice:
         viewd_locs: dict[str, list[tuple[int, int]]] = {}
         for step_id in range(len(slice["content"])):
             step = slice["content"][step_id]
+            if step.get("message", None) is None:
+                continue
             if (
                 step["message"]["content"][0]["type"] == "tool_use"
                 and step["message"]["content"][0]["name"].lower() == "read"
@@ -319,15 +325,11 @@ class RewardEstimatorWholeSlice:
             viewd_locs[file_path] = self._merge_intervals(viewd_locs[file_path])
             for target_loc in self.parsed_gold_patch[file_path]:
                 for pred_loc in viewd_locs[file_path]:
-                    if (
-                        target_loc["start"] <= pred_loc[1] <= target_loc["end"]
-                        or target_loc["start"] <= pred_loc[0] <= target_loc["end"]
-                    ):
-                        effective_interval = (
-                            max(target_loc["start"], pred_loc[0]),
-                            min(target_loc["end"], pred_loc[1]),
-                        )
-                        effective_lines += max(0, effective_interval[1] - effective_interval[0])
+                    effective_interval = (
+                        max(target_loc["start"], pred_loc[0]),
+                        min(target_loc["end"], pred_loc[1]),
+                    )
+                    effective_lines += max(0, effective_interval[1] - effective_interval[0])
 
         return {
             "keysteps": keysteps,
@@ -339,11 +341,14 @@ class RewardEstimatorWholeSlice:
         """
         reward: whether reproduction.py exits with code from non zero to zero when gold_patch applied
         """
+        self.container.send_command("git stash; git reset --hard HEAD;")
         keysteps: ClaudeCodeTraj = []
         merged_slice: ClaudeCodeTraj = []
         for slice in slices:
             merged_slice.extend(slice["content"])
         for step_id in range(len(merged_slice) - 1, 0, -1):
+            if merged_slice[step_id].get("message", None) is None:
+                continue
             if (
                 merged_slice[step_id]["message"]["content"][0]["type"] == "tool_use"
                 and merged_slice[step_id]["message"]["content"][0]["name"].lower() == "write"
@@ -414,6 +419,7 @@ class RewardEstimatorWholeSlice:
         """
         reward = old similarity - new similarity of added lines compared to ground truth added lines
         """
+        self.container.send_command("git stash; git reset --hard HEAD;")
         old_added_lines: str = ""
         old_modification: str = self.current_patch
         old_parsed_modification = self._parse_patch(old_modification)
@@ -423,6 +429,8 @@ class RewardEstimatorWholeSlice:
         keysteps: ClaudeCodeTraj = []
         for step_id in range(len(slice["content"])):
             step = slice["content"][step_id]
+            if step.get("message", None) is None:
+                continue
             if (
                 step["message"]["content"][0]["type"] == "tool_use"
                 and step["message"]["content"][0]["name"].lower() == "edit"
@@ -469,19 +477,44 @@ class RewardEstimatorWholeSlice:
         old_sim: float = self.code_similarity(self.sorted_added_lines, old_added_lines)
         new_sim: float = self.code_similarity(self.sorted_added_lines, new_added_lines)
         reward = new_sim - old_sim
+        print(reward)
         return {
             "keysteps": keysteps,
             "reward": reward,
             "traj": slice,
         }
 
-    @staticmethod
-    def validation(slices: list[TrajSlice]) -> list[RewardEstimatorWholeSlice.RewardReturnType]:
-        return [{"keysteps": slice["content"], "reward": 1.0, "traj": slice} for slice in slices]
+    def successful_edit(self, slice: TrajSlice) -> RewardEstimatorWholeSlice.RewardReturnType:
+        """
+        reward = old similarity - new similarity of added lines compared to ground truth added lines
+        """
+
+        keysteps: ClaudeCodeTraj = []
+        for step_id in range(len(slice["content"])):
+            step = slice["content"][step_id]
+            if step.get("message", None) is None:
+                continue
+            if (
+                step["message"]["content"][0]["type"] == "tool_use"
+                and step["message"]["content"][0]["name"].lower() == "edit"
+                and (not slice["content"][step_id + 1]["message"]["content"][0].get("is_error", False))
+            ):
+                if slice["content"][step_id - 1]["type"] == "assistant":
+                    keysteps.append(slice["content"][step_id - 1])
+                keysteps.append(step)
+
+        return {
+            "keysteps": keysteps,
+            "reward": 1.0,
+            "traj": slice,
+        }
 
     @staticmethod
-    def result(slice: TrajSlice) -> RewardEstimatorWholeSlice.RewardReturnType:
-        reward: float = 1.0
+    def validation(slices: list[TrajSlice]) -> list[RewardEstimatorWholeSlice.RewardReturnType]:
+        return [{"keysteps": slice["content"], "reward": 0.5, "traj": slice} for slice in slices]
+
+    def result(self, slice: TrajSlice) -> RewardEstimatorWholeSlice.RewardReturnType:
+        reward: float = 0.5
         # These two cases are when tool call format is wrong
         # so that tool call are parsed as text
         # which makes the agent early exit
@@ -493,6 +526,16 @@ class RewardEstimatorWholeSlice:
             and "<tool_call>" in slice["content"][-2]["message"]["content"][0]["text"]
         ):
             reward = -1.0
+        elif not self.solution_patch.strip():
+            reward = -1.0
+        else:
+            self.container.send_command("git stash; git reset --hard HEAD;")
+            self.write_file("/testbed/reproduction.py", self.reproduction_file)
+            self.apply_patch(self.solution_patch)
+            suc = self.container.send_command("python /testbed/reproduction.py").metadata.exit_code == 0
+            if not suc:
+                reward = -0.5
+        
         return {
             "keysteps": slice["content"],
             "reward": reward,
@@ -520,7 +563,7 @@ class RewardEstimatorWholeSlice:
                 res.append((step, slice["reward"]))
         return res
 
-    def main(self, traj: ClaudeCodeTraj) -> list[tuple[ClaudeCodeStep, float]]:
+    def calculate_reward(self, traj: ClaudeCodeTraj, overwrite_edit_with_final_success: bool) -> dict[str, list[RewardEstimatorWholeSlice.RewardReturnType]]:
         slices: list[TrajSlice] = TajectoryProcessor.split(traj)
         loc_slices: list[TrajSlice] = []
         repro_slices: list[TrajSlice] = []
@@ -544,16 +587,92 @@ class RewardEstimatorWholeSlice:
             self.localization(slice) for slice in loc_slices
         ]
         reproduction_reward_list: list[RewardEstimatorWholeSlice.RewardReturnType] = self.reproduction(repro_slices)
-        self.container.send_command("git stash; git reset --hard HEAD;")
-        edit_reward_list: list[RewardEstimatorWholeSlice.RewardReturnType] = [self.edit(slice) for slice in edit_slices]
+        if overwrite_edit_with_final_success:
+            edit_reward_list: list[RewardEstimatorWholeSlice.RewardReturnType] = [self.successful_edit(slice) for slice in edit_slices]
+        else:
+            edit_reward_list: list[RewardEstimatorWholeSlice.RewardReturnType] = [self.edit(slice) for slice in edit_slices]
         validation_reward_list: list[RewardEstimatorWholeSlice.RewardReturnType] = self.validation(validation_slices)
         result_reward_list: list[RewardEstimatorWholeSlice.RewardReturnType] = [self.result(result_slice)]
-        reward_sequence = self.flattern(
-            localization_reward_list
-            + reproduction_reward_list
-            + edit_reward_list
-            + validation_reward_list
-            + result_reward_list
+        return {
+            "reproduction": reproduction_reward_list,
+            "localization": localization_reward_list,
+            "edit": edit_reward_list,
+            "validation": validation_reward_list,
+            "result": result_reward_list,
+        }
+    
+    def calculate_overall_edit_sim(self):
+        parsed_solution_patch: dict[str, list[RewardEstimatorWholeSlice.ParsedPatch]] = self._parse_patch(
+            self.solution_patch
         )
+        preditions_sorted_added_lines: str = ""
+        for file_path in sorted(parsed_solution_patch.keys()):
+            for loc in sorted(parsed_solution_patch[file_path], key=lambda x: x["start"]):
+                preditions_sorted_added_lines += "\n".join(loc["added_lines"]) + "\n"
+        sim: float = self.code_similarity(self.sorted_added_lines, preditions_sorted_added_lines)
+        return sim
+    
+    def main(self, traj: ClaudeCodeTraj, success: float, overwrite_edit_reward_with_final: bool = True) -> RewardEstimatorWholeSlice.ReturnType:
+        rewards: dict[str, list[RewardEstimatorWholeSlice.RewardReturnType]] = self.calculate_reward(traj, success > 0.5 and overwrite_edit_reward_with_final)
+        overall_reward: dict[str, float] = {}
+        overall_reward["success"] = success
+        overall_reward["edit"] = self.calculate_overall_edit_sim()
+        overall_reward["localization"] = sum([i["reward"] if i["reward"] > -0.99 else 0.0 
+                                              for i in rewards["localization"]])
+        overall_reward["repdocution"] = rewards["reproduction"][0]["reward"] \
+                                            if rewards["reproduction"] else -1.0
+        overall_reward["result"] = rewards["result"][0]["reward"] \
+                                            if rewards["result"] else -1.0
+        slices: list[RewardEstimatorWholeSlice.RewardReturnType] = (
+            rewards["localization"]
+            + rewards["reproduction"]
+            + rewards["edit"]
+            + rewards["validation"]
+            + rewards["result"]
+        )
+        reward_sequence = self.flattern(slices)
         reward_sequence = self.assign_error_penalties(reward_sequence)
-        return reward_sequence
+        return {
+            "steps": reward_sequence,
+            "overall": overall_reward,
+            "slices": slices,
+        }
+
+
+def reward_test():
+    from functools import partial
+    import json, os
+    from utils.docker_runtime import Runtime
+    from utils.logger import logger
+
+    #with open("utils/reward_test_sample_failed.jsonl") as f:
+    #    samples = [json.loads(i) for i in f]
+    samples: list[dict[str, Any]]=[]
+    for file in os.listdir("result"):
+        with open(f"result/{file}") as f:
+            samples.append(json.load(f))
+    with open("swebench_verified_filtered.jsonl") as f:
+        ds = [json.loads(i) for i in f]
+        ds = {i["instance_id"]: i for i in ds}
+
+    os.makedirs("test_res", exist_ok=True)
+    for sample in samples:
+        instance_id = sample["instance_id"]
+        if os.path.exists(f"test_res/{instance_id}.json"):
+            continue
+        image_name = f"swebench/sweb.eval.x86_64.{instance_id}".replace("__", "_1776_")
+        container: Runtime = Runtime.start_session(image_name, 
+                                                ds[instance_id], 
+                                                partial(logger, run_id="reward_test", instance_id=instance_id),
+                                                "linux")
+        reward_estimator = RewardEstimatorWholeSlice(container, 
+                                                sample["reproduction_file"], 
+                                                sample["model_patch"],
+                                                ds[instance_id]["patch"])
+        processed_res = reward_estimator.main(sample["trajectory"], success=sample["success"])
+        with open(f"test_res/{instance_id}.json", "w") as f:
+            json.dump(processed_res, f, indent=True)
+
+if __name__ == "__main__":
+    reward_test()
+
