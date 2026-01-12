@@ -1,6 +1,6 @@
 dataset:
-  dataset_path: swe_debug.jsonl
-  namespace: swebench
+  dataset_path: /home/v-kenanli/agents/target.jsonl
+  namespace: starryzhang
   full_set: princeton-nlp/SWE-bench
   split: test
 
@@ -22,14 +22,16 @@ agent:
     {description}
     =================================================
     You task is to fix the bug with the following steps:
-    (1) write test cases to reproduce the bug.
-    (2) explore the source codes to locate the bug.
+    (1) explore the source codes to find relevant files.
+    (2) write test cases to reproduce the bug.
     (3) edit the source codes to fix the bug.
     (4) rerun your written test cases to validate that the bug is fixed. If not, go back to explore the source codes and fix the codes again.
     (5) remember to delete the test cases you write at last.
-    Please do not commit your edits. We will do it later.
+    =================================================
+    Notes:
+    (1) Please do not commit your edits. We will do it later.
+    (2) In our setting, each of your response must contain exactly one text content and one tool call. If you want to submit your result, just output one reponse with only text content and without tool call -- a response without tool call means stop and submission. If you have not finished, each of your response must have one tool call to make the session continue.
 
 runtime:
-  max_step: 40
-  workers: 16
+  max_step: 100
   run_method: cli

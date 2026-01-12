@@ -10,15 +10,9 @@ import yaml
 if platform.system() == "Linux":
     import resource
 
-from datasets import Dataset
-from swebench.harness.utils import load_swebench_dataset
-from transformers import AutoTokenizer as AutoProcessor
 from utils.claude_code_controller import ClaudeController
-from utils.custom_adapter import LlmProxyTraceToAugmentedTriplet
-from utils.custom_callbacks import AddLogprobs, AddTemperature
-from utils.evaluation import evaluate
 from utils.logger import logger
-from utils.type import AgentResult, ClaudeCodeStep
+from utils.type import AgentResult
 
 from agentlightning import (
     InMemoryLightningStore,
@@ -61,6 +55,7 @@ class CodingAgent(LitAgent):
         force_rebuild: bool = False,
         timeout: int = 1_800,  # in sec
         instance_image_tag: str = "latest",
+        run_id: str = "default",
     ) -> None:
         super().__init__()
         self.namespace = namespace
@@ -75,11 +70,9 @@ class CodingAgent(LitAgent):
         self.timeout = timeout
         self.instance_image_tag = instance_image_tag
 
-        full_dataset = load_swebench_dataset(full_set, split)
-        self.dataset = {each["instance_id"]: each for each in full_dataset}
-
         self.tools = tools
         self.user_prompt = user_prompt
+        self.run_id = run_id
 
         # run instances locally
         if platform.system() == "Linux":
@@ -88,8 +81,7 @@ class CodingAgent(LitAgent):
     async def rollout_async(
         self, task: Dict[str, Any], resources: NamedResources, rollout: Rollout
     ) -> RolloutRawResult:
-        run_id = f"epoch_{task.get('epoch', 0)}"
-        image = f"{self.namespace}/sweb.eval.x86_64.{task['instance_id'].lower()}".replace("__", "_1776_")
+        image = task["docker_image"]
         reward = 0.0
 
         llm = resources.get("llm")
@@ -102,7 +94,7 @@ class CodingAgent(LitAgent):
             controller = ClaudeController(
                 image,
                 task,
-                run_id,
+                self.run_id,
                 set(self.tools),
                 self.user_prompt,
                 llm.endpoint,
@@ -110,42 +102,19 @@ class CodingAgent(LitAgent):
             )
             # 2. execute task
             prediction: AgentResult = controller.run_instance(task, max_step=self.max_step, run_method=self.run_method)
-            logger(run_id, task["instance_id"], json.dumps(prediction, indent=4))
+            logger(self.run_id, task["instance_id"], json.dumps(prediction, indent=4))
             # Under development: Intermediate Reward
             # intermediate_reward_list: list[tuple[ClaudeCodeStep, float]] = controller.calculate_intermediate_rewards_per_slice(task["patch"],  prediction["model_patch"], prediction["reproduction_file"], prediction["trajectory"])
             del controller
         except Exception as e:
-            logger(run_id, task["instance_id"], f"Exception during rollout: {e}")
+            logger(self.run_id, task["instance_id"], f"Exception during rollout: {e}")
             return reward
 
-        # 3. obtain rewards (evaluation result)
-        # empty patch
-        if prediction["model_patch"] in ["", None]:
-            return reward
-
-        instance_id = prediction["instance_id"]
-
-        result = evaluate(
-            prediction,
-            self.dataset[instance_id],
-            self.cache_level,
-            self.clean,
-            self.force_rebuild,
-            run_id,
-            self.timeout,
-            namespace=self.namespace,
-            instance_image_tag=self.instance_image_tag,
-        )
-
-        # error patch
-        if result is None:
-            return reward
-
-        report = result[1]
-        # resolved/unresolved patch
-        if report[instance_id]["resolved"]:
-            reward = 1.0
-        return reward
+        os.makedirs(f"patch/{self.run_id}", exist_ok=True)
+        with open(f"patch/{self.run_id}/{task['instance_id']}.diff", "w") as f:
+            f.write(prediction["model_patch"]) 
+        
+        return 0.0
 
     def _strip_proxy_helper(self, proxy_llm: LLM, rollout: Rollout) -> LLM:
         """Convert [`ProxyLLM`][agentlightning.ProxyLLM] instances into concrete LLMs.
@@ -198,136 +167,52 @@ def flatten_messages(messages: List[Any]) -> List[Dict[str, str]]:
         flattened.append(msg)
     return flattened
 
-
-async def cc_agent_dry_run_sample(
-    model_path,
-    server_address,
-    sonnet_name,
-    haiku_name,
-    output_dir,
-    config,
-) -> None:
-    """Run a dry run of the cc agent on a single sample.
-
-    This is a simple test function that runs the math agent on the first 4 problems
-    using a single worker. Useful for testing the setup and configuration.
-    """
-
-    dataset = load_dataset(config["dataset"]["dataset_path"], limit=4)
-    tokenizer = AutoProcessor.from_pretrained(model_path)
-
-    logging = configure_logger(name="Claude Code Agent")
-
-    tracer = OtelTracer()
-    runner = LitAgentRunner(tracer)
-    adapter = LlmProxyTraceToAugmentedTriplet()
-    store = LightningStoreServer(InMemoryLightningStore(), host="0.0.0.0", port=7654)
-    llm_proxy = LLMProxy(
-        port=12358, store=store, callbacks=["return_token_ids", "opentelemetry", AddLogprobs, AddTemperature]
-    )
-
-    await store.start()
-
-    llm_proxy.update_model_list(
-        [
-            ModelConfig(
-                model_name=f"{sonnet_name}",
-                litellm_params={
-                    "model": f"hosted_vllm/{model_path}",
-                    "api_base": server_address,
-                },
-            ),
-            ModelConfig(
-                model_name=f"{haiku_name}",
-                litellm_params={
-                    "model": f"hosted_vllm/{model_path}",
-                    "api_base": server_address,
-                },
-            ),
-        ]
-    )
-    await llm_proxy.restart()
-
-    # Put the LLM proxy address into the store as an address
-    await store.add_resources(
-        {
-            "llm": llm_proxy.as_resource(model="local"),
-        }
-    )
-
-    agent = CodingAgent(
-        namespace=config["dataset"]["namespace"],
-        full_set=config["dataset"]["full_set"],
-        split=config["dataset"]["split"],
-        max_step=config["runtime"]["max_step"],
-        run_method=config["runtime"]["run_method"],
-        tools=config["agent"]["tools"],
-        user_prompt=config["agent"]["user_prompt"],
-    )
-
-    with runner.run_context(agent=agent, store=store):
-        rollout = await runner.step(
-            dataset[0],
-        )
-
-        spans = await store.query_spans(rollout.rollout_id)
-        triplets = adapter.adapt(spans)
-        logging.info(f"dump {len(spans)} spans, extract {len(triplets)} triplets")
-        if output_dir is not None:
-            with open(
-                os.path.join(output_dir, f"stream_{dataset[0]['instance_id']}-{rollout.attempt.attempt_id}.json"), "w"
-            ) as f:
-                for span in spans:
-                    f.write(json.dumps(span.model_dump()) + "\n")
-
-            all_triplets: List[Dict[str, Any]] = []
-            recent_reward: Optional[float] = None
-            for triplet in reversed(triplets):
-                if triplet.reward is not None:
-                    recent_reward = triplet.reward
-
-                prompt = tokenizer.decode(triplet.prompt["token_ids"])  # type: ignore
-                all_triplets.append(
-                    {
-                        "repo": rollout.input["repo"],
-                        "instance_id": rollout.input["instance_id"],
-                        "turn": triplet.metadata["sequence_id"],
-                        "prompt_ids": triplet.prompt["token_ids"],
-                        "gold_completion_ids": triplet.response["token_ids"],
-                        "logprobs": triplet.response["logprobs"],
-                        "reward": recent_reward,
-                        "prompt": prompt,
-                        "messages": flatten_messages(triplet.metadata["messages"]),
-                    }
-                )
-
-            ds = Dataset.from_list(all_triplets)
-            ds.save_to_disk(os.path.join(output_dir, f"dataset-{dataset[0]['instance_id']}"))
-            logging.info(f"Saved dataset with {len(ds)} samples to dataset-{dataset[0]['instance_id']}")
-
-    await llm_proxy.stop()
-
+def find_idle_port() -> tuple[int, int]:
+    '''
+    Automatically find 2 ports not occupied.
+    '''
+    import socket
+    
+    ports = []
+    sockets = []
+    
+    for _ in range(2):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(('', 0))  # Bind to any available port
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        ports.append(sock.getsockname()[1])
+        sockets.append(sock)
+    
+    # Close all sockets to release the ports
+    for sock in sockets:
+        sock.close()
+    
+    print("Find two idle ports:", (ports[0], ports[1]))
+    return (ports[0], ports[1])
 
 async def gold_cc_agent_run_dataset(
-    sonnet_name,
-    haiku_name,
-    output_dir,
     config,
+    model_name,
+    api_base,
+    api_key
 ):
     """Run a dry run of the cc agent on a single sample.
 
     This is a simple test function that runs the math agent on the first 4 problems
     using a single worker. Useful for testing the setup and configuration.
     """
-    dataset = load_dataset(config["dataset"]["dataset_path"])
-
-    logging = configure_logger(name="Claude Code Agent")
+    sonnet_name = "claude-sonnet-4-5-20250929"
+    haiku_name = "claude-haiku-4-5-20251001"
+    run_id=model_name.replace("/", "_")
+    # Use swe_100.jsonl dataset
+    dataset = load_dataset(config["dataset"]["dataset_path"],)
 
     tracer = OtelTracer()
     runner = LitAgentRunner(tracer)
-    store = LightningStoreServer(InMemoryLightningStore(), host="0.0.0.0", port=7654)
+    port1, port2 = find_idle_port()
+    store = LightningStoreServer(InMemoryLightningStore(), host="0.0.0.0", port=port1)
     llm_proxy = LLMProxy(
-        port=12358,
+        port=port2,
         store=store,
         callbacks=[
             "opentelemetry",
@@ -336,28 +221,85 @@ async def gold_cc_agent_run_dataset(
 
     await store.start()
 
-    llm_proxy.update_model_list(
-        [
-            ModelConfig(
-                model_name=f"{sonnet_name}",
-                litellm_params={"model": f"anthropic/{sonnet_name}", "api_key": "os.environ/ANTHROPIC_API_KEY"},
-            ),
-            ModelConfig(
-                model_name=f"{haiku_name}",
-                litellm_params={"model": f"anthropic/{haiku_name}", "api_key": "os.environ/ANTHROPIC_API_KEY"},
-            ),
-        ]
-    )
-    await llm_proxy.restart()
-
-    # Put the LLM proxy address into the store as an address
-    await store.add_resources(
-        {
-            "llm": llm_proxy.as_resource(model="local"),
-        }
-    )
+    # Use CloudGPT configuration (same as cc_apo_algo.py)
+    #from utils.cloudgpt_aoai import get_openai_token_provider
+    #token_provider = get_openai_token_provider()
 
     for each in dataset:
+        if "azure" not in model_name:
+            llm_proxy.update_model_list(
+                [
+                    ModelConfig(
+                        model_name=f"{sonnet_name}",
+                        litellm_params={
+                            "model": model_name,
+                            "api_base": api_base,
+                            "api_key": api_key,
+                        },
+                    ),
+                    ModelConfig(
+                        model_name=f"{haiku_name}",
+                        litellm_params={
+                            "model": model_name,
+                            "api_base": api_base,
+                            "api_key": api_key,
+                        },
+                    ),
+                ]
+            )
+        else:
+            from utils.cloudgpt_aoai import get_openai_token_provider
+            token_provider = get_openai_token_provider()
+            llm_proxy.update_model_list(
+                [
+                    ModelConfig(
+                        model_name=f"{sonnet_name}",
+                        litellm_params={
+                            "model": model_name,
+                            "api_base": "https://cloudgpt-openai.azure-api.net/",
+                            "api_version": "2025-04-01-preview",
+                            "azure_ad_token": token_provider(),
+                        },
+                    ),
+                    ModelConfig(
+                        model_name=f"{haiku_name}",
+                        litellm_params={
+                            "model": model_name,
+                            "api_base": "https://cloudgpt-openai.azure-api.net/",
+                            "api_version": "2025-04-01-preview",
+                            "azure_ad_token": token_provider(),
+                        },
+                    ),
+                ]
+            )
+        await llm_proxy.restart()
+
+        # Put the LLM proxy address into the store as an address
+        await store.add_resources(
+            {
+                "llm": llm_proxy.as_resource(model="local"),
+            }
+        )
+
+
+        if os.path.exists(f"patch/{run_id}/{each['instance_id']}.diff"):
+            with open(f"patch/{run_id}/{each['instance_id']}.diff") as f:
+                patch=f.read()
+        else:
+            patch=""
+        if os.path.exists(f"logs/{run_id}/{each['instance_id']}"):
+            with open(f"logs/{run_id}/{each['instance_id']}") as f:
+                lg=f.read()
+            if '"num_turns": ' in lg:
+                try:
+                    turns = lg.split('"num_turns": ')[-1].split(",\n")[0]
+                    print(each["instance_id"], turns, "Not a git repository." not in patch)
+                    if int(turns) >= 10 and ("Not a git repository." not in patch): # not unexpected exit:
+                        print("find valid traj, continue.", flush=True)
+                        continue
+                except:
+                    pass
+
         agent = CodingAgent(
             namespace=config["dataset"]["namespace"],
             full_set=config["dataset"]["full_set"],
@@ -366,68 +308,34 @@ async def gold_cc_agent_run_dataset(
             run_method=config["runtime"]["run_method"],
             tools=config["agent"]["tools"],
             user_prompt=config["agent"]["user_prompt"],
+            run_id=run_id,
         )
         with runner.run_context(agent=agent, store=store):
             rollout = await runner.step(each)
             spans = await store.query_spans(rollout.rollout_id)
 
-        if output_dir is None:
-            logging.info(f"instance {each['instance_id']} generate {len(spans)} spans")
-        else:
-            logging.info(f"instance {each['instance_id']} dump {len(spans)} spans to {output_dir}")
-            with open(os.path.join(output_dir, f"{each['instance_id']}.json"), "w") as f:
-                for span in spans:
-                    f.write(json.dumps(span.model_dump()) + "\n")
-
-        time.sleep(2 * 60)
+        time.sleep(30)
 
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
 
     parser = ArgumentParser()
-    # extract spans from official Claude Code
-    parser.add_argument("--official", action="store_true", help="Whether to run official claude code.")
-
-    # extract spans from hosted LLM server via litellm proxy
-    parser.add_argument(
-        "--model_name_or_path", type=str, default="Qwen/Qwen3-Coder-30B-A3B-Instruct", help="Model name or path."
-    )
-    parser.add_argument("--server_address", type=str, default="http://localhost:8000/v1", help="LLM server address.")
-
-    # common setup
-    parser.add_argument(
-        "--sonnet_name", type=str, default="claude-sonnet-4-5-20250929", help="Name of the sonnet model."
-    )
-    parser.add_argument("--haiku_name", type=str, default="claude-haiku-4-5-20251001", help="Name of the haiku model.")
-    parser.add_argument("--output_dir", type=str, default="data", help="Directory to save output logs.")
+    parser.add_argument("--model_name", type=str, default="openrouter/google/gemini-3-flash-preview", help="Model name with provider prefix.")
+    # or azure/gpt-5.2-20251211
+    parser.add_argument("--api_base", type=str, default="https://openrouter.ai/api/v1", help="Model name with provider prefix. For Azure OpenAI this field is not needed.")
+    parser.add_argument("--api_key", type=str, default="none", help="API key. For Azure OpenAI we use browser interactive login, so API key is not used.")
     parser.add_argument("--agent_config", type=str, default="agent_config.yaml", help="Configs to run claude code.")
-
     args = parser.parse_args()
 
     with open(args.agent_config) as f:
         config = yaml.safe_load(f)
 
-    if args.output_dir is not None:
-        os.makedirs(args.output_dir, exist_ok=True)
-
-    if not args.official:
-        asyncio.run(
-            cc_agent_dry_run_sample(
-                model_path=args.model_name_or_path,
-                server_address=args.server_address,
-                sonnet_name=args.sonnet_name,
-                haiku_name=args.haiku_name,
-                output_dir=args.output_dir,
-                config=config,
-            )
+    asyncio.run(
+        gold_cc_agent_run_dataset(
+            config,
+            args.model_name,
+            args.api_base,
+            args.api_key,
         )
-    else:
-        asyncio.run(
-            gold_cc_agent_run_dataset(
-                sonnet_name=args.sonnet_name,
-                haiku_name=args.haiku_name,
-                output_dir=args.output_dir,
-                config=config,
-            )
-        )
+    )
