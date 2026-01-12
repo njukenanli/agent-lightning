@@ -60,3 +60,9 @@ The jsonl file should contain these fields:
 Not fully implemented. 
 
 Please split the jsonl file into 4-8 files and start cc_agent.py for each file.
+
+### Windows Compatibility
+
+Currently the code is only ok on Linux.
+
+To support running on Windows you need to add some if-else into `examples/cc/utils/claude_code_controller.py`.
