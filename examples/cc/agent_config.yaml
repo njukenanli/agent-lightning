@@ -1,8 +1,6 @@
 dataset:
-  dataset_path: swe_debug.jsonl
+  dataset_path: swebench_verified_filtered.jsonl
   namespace: swebench
-  full_set: princeton-nlp/SWE-bench
-  split: test
 
 agent:
   tools:
@@ -14,22 +12,35 @@ agent:
     - Write
     - TodoWrite
     - WebFetch
-    - ExitPlanMode
 
-  user_prompt: |-  # multiline string
+  user_prompt: |-
     You are given a code repository in the current directory (/testbed).
-    The bug description is:
+    The problem description is:
     {description}
+
     =================================================
-    You task is to fix the bug with the following steps:
-    (1) write test cases to reproduce the bug.
-    (2) explore the source codes to locate the bug.
-    (3) edit the source codes to fix the bug.
-    (4) rerun your written test cases to validate that the bug is fixed. If not, go back to explore the source codes and fix the codes again.
-    (5) remember to delete the test cases you write at last.
-    Please do not commit your edits. We will do it later.
+
+    You task is to resolve the problem with the following steps:
+    1. Localization. Explore the source codes to locate the codes relevant to the problem (which, need to be edited to resolve the problem; are contexts of the problematic locations; or can help write correct reproduction testcases).
+    2. Reproduction. Write test cases in /testbed/reproduction.py that can reproduce the bug and test whether your edits have solved the problem.
+      2.1. Your testcases should be able to run with `python reproduction.py` (or `poetry run python reproduction.py` `uv run reproduction.py` depending on the environment). reproduction.py should exit with exit code 0 if the problem is resolved and exit with non-zero code if the problem still exists.
+      2.2. Note for some repositories you need to make some settings, such as exporting some environment variables / creating a test database, before test cases can run normally. You need to explore how to make these settings and apply these settings at the begginning of reproduction.py.
+      2.3. Then you must run `python reproduction.py` to see whether your test cases can reproduce the problem. If your reproduction.py fails with an error message that cannot reproduce the problem in the problem description, though it exits with non-zero code, it means your reproduction.py fails to execute normally before revealing the problem description, so it is still wrong. If reproduction.py exits with 0, unable to reveal the problem description, of course it is also wrong.
+      2.4. If your testcases fail to reproduce the problem, explore the source codes again if necessary, use the `Write` tool to re-write a new reproduction.py file (do not use `Edit` in this phase) and run it again.
+    3. Edit. Edit the source codes with `Edit` tool to fix the problem.
+    4. Validation. Rerun your written test cases to validate that the problem is fixed.
+      4.1. If reproduction.py returns error, go back to explore the source codes (Step 1. Localization) again if necessary, rewrite reproduction.py (Step 2. Reproduction) if reproduction.py fails even before revealing the problem in problem description, and fix the codes (Step 3. Edit) again.
+      4.2. If you pass reproduction.py, submit.
+
+    =================================================
+
+    Notes:
+    (1) Do not delete reproduction.py at last because we still need it later.
+    (2) Please do not commit your edits. We will do it later.
+    (3) You should use `TodoWrite` tool to track whether you have done each of the 4 required steps above (Localization, Reproduction, Edit, Validation). Create a TodoWrite list at the beginning and update it when any of the 4 steps is completed.
+    (4) Each round of your response should contain one text output about your thinking AND exactly one tool call. If you want to submit your solution, output a text message without tool call, and the system will see this pure text output without tool call as submission. If you output a text message without tool call before you finish the task, the session would terminate early, so DO NOT do that.
 
 runtime:
   max_step: 40
-  workers: 16
+  workers: 8
   run_method: cli

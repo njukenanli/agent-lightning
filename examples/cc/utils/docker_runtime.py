@@ -555,6 +555,7 @@ if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
         # which operating system this code is running on, note windows can run linux containers, so engine_os != (container) platform
         extra_hosts = {"host.docker.internal": "host-gateway"} if "linux" in engine_os else None
 
+        os.makedirs(os.path.join(os.getcwd(), "logs", "tmp"), exist_ok=True)
         if platform == "windows":
             shell_command = r"powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -NoExit"
             working_dir = r"C:\testbed"
@@ -582,6 +583,12 @@ if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
             },
             working_dir=working_dir,
             extra_hosts=extra_hosts,
+            volumes={
+                os.path.join(os.getcwd(), "logs", "tmp"): {
+                    "bind": os.path.join(working_dir, "mnt_tmp"),
+                    "mode": "rw",
+                }
+            },
             network_mode="host",
             **run_kwargs,
         )

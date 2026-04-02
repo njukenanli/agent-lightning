@@ -1,11 +1,18 @@
 import asyncio
 import time
 
+import yaml
 from algorithm import build_dataset, run_rollout
 from cc_agent import load_dataset
 from transformers import AutoTokenizer
 from utils.custom_adapter import LlmProxyTraceToAugmentedTriplet
-from utils.custom_callbacks import AddGreedySamplingParams, AddLogprobs
+from utils.custom_callbacks import AddSamplingParams, AddLogprobs
+from utils.response_validation_middleware import (
+    ResponseValidationMiddleware,
+    StepWarningMiddleware,
+    set_allowed_tools,
+    set_max_step,
+)
 
 from agentlightning.llm_proxy import LLMProxy
 from agentlightning.store import LightningStoreClient
@@ -86,14 +93,28 @@ if __name__ == "__main__":
     )
     parser.add_argument("--span_dump_path", type=str, default="spans", help="If not None, dump the spans to disk.")
     parser.add_argument("--enable_lora", action="store_true", help="Whether to enable LoRA during trace collection.")
+    parser.add_argument(
+        "--agent_config", type=str, default="agent_config.yaml", help="Agent config to run Claude Code."
+    )
 
     args = parser.parse_args()
 
+    with open(args.agent_config) as f:
+        config = yaml.safe_load(f)
+
     store = LightningStoreClient(args.store_address)
+
+    # Configure middleware settings from the agent config.
+    set_allowed_tools(set(config["agent"]["tools"]))
+    set_max_step(config["runtime"]["max_step"])
+
     llm_proxy = LLMProxy(
         port=args.proxy_port,
         store=store,
-        callbacks=["return_token_ids", "opentelemetry", AddLogprobs, AddGreedySamplingParams],
+        callbacks=["return_token_ids", "opentelemetry", AddLogprobs, AddSamplingParams],
+        # Custom middlewares are listed first so they are added first and thus run
+        # innermost (closest to the backend), seeing raw non-streaming JSON.
+        middlewares=[StepWarningMiddleware, ResponseValidationMiddleware, "rollout_attempt", "stream_conversion"],
     )
     if args.access_host is not None:
         llm_proxy.server_launcher._access_host = args.access_host

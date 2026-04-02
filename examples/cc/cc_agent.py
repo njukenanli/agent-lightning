@@ -15,10 +15,11 @@ from swebench.harness.utils import load_swebench_dataset
 from transformers import AutoTokenizer as AutoProcessor
 from utils.claude_code_controller import ClaudeController
 from utils.custom_adapter import LlmProxyTraceToAugmentedTriplet
-from utils.custom_callbacks import AddGreedySamplingParams, AddLogprobs
+from utils.custom_callbacks import AddSamplingParams, AddLogprobs
 from utils.evaluation import evaluate
 from utils.logger import logger
 from utils.type import AgentResult, ClaudeCodeStep
+from utils.reward import RewardEstimatorWholeSlice
 
 from agentlightning import (
     InMemoryLightningStore,
@@ -96,56 +97,79 @@ class CodingAgent(LitAgent):
         assert llm is not None, "LLM resource is required for rollout."
 
         llm = self._strip_proxy_helper(llm, rollout)
+        # 1. init container
+        controller = ClaudeController(
+            image,
+            task,
+            run_id,
+            set(self.tools),
+            self.user_prompt,
+            llm.endpoint,
+            llm.api_key or os.environ.get("ANTHROPIC_AUTH_TOKEN", "dummy"),
+        )
 
         try:
-            # 1. init container
-            controller = ClaudeController(
-                image,
-                task,
-                run_id,
-                set(self.tools),
-                self.user_prompt,
-                llm.endpoint,
-                llm.api_key or os.environ.get("ANTHROPIC_AUTH_TOKEN", "dummy"),
-            )
             # 2. execute task
             prediction: AgentResult = controller.run_instance(task, max_step=self.max_step, run_method=self.run_method)
             logger(run_id, task["instance_id"], json.dumps(prediction, indent=4))
-            # Under development: Intermediate Reward
-            # intermediate_reward_list: list[tuple[ClaudeCodeStep, float]] = controller.calculate_intermediate_rewards_per_slice(task["patch"],  prediction["model_patch"], prediction["reproduction_file"], prediction["trajectory"])
+
+            # 3. obtain rewards (evaluation result)
+            # empty patch
+            if (prediction["model_patch"] is None) or (not prediction["model_patch"].strip()):
+                intermediate_reward: RewardEstimatorWholeSlice.ReturnType = RewardEstimatorWholeSlice.intermediate_reward(
+                    prediction,
+                    controller.container,
+                    task["patch"],
+                    task.get('epoch', 0)
+                )
+                # todo: how to send intermediate_reward to GPU side?
+                del controller
+                return reward
+
+            instance_id = prediction["instance_id"]
+
+            result = evaluate(
+                prediction,
+                self.dataset[instance_id],
+                self.cache_level,
+                self.clean,
+                self.force_rebuild,
+                run_id,
+                self.timeout,
+                namespace=self.namespace,
+                instance_image_tag=self.instance_image_tag,
+            )
+
+            # error patch
+            if result is None:
+                intermediate_reward: RewardEstimatorWholeSlice.ReturnType = RewardEstimatorWholeSlice.intermediate_reward(
+                    prediction,
+                    controller.container,
+                    task["patch"],
+                    task.get('epoch', 0)
+                )
+                del controller
+                return reward
+
+            report = result[1]
+            # resolved/unresolved patch
+            if report[instance_id]["resolved"]:
+                reward = 1.0
+                prediction["success"] = 1.0
+            
+            intermediate_reward: RewardEstimatorWholeSlice.ReturnType = RewardEstimatorWholeSlice.intermediate_reward(
+                prediction,
+                controller.container,
+                task["patch"],
+                task.get('epoch', 0)
+            )
+            # todo: how to send intermediate_reward to GPU side?
             del controller
+            return reward
         except Exception as e:
             logger(run_id, task["instance_id"], f"Exception during rollout: {e}")
+            del controller # anyway, resource should be released...
             return reward
-
-        # 3. obtain rewards (evaluation result)
-        # empty patch
-        if prediction["model_patch"] in ["", None]:
-            return reward
-
-        instance_id = prediction["instance_id"]
-
-        result = evaluate(
-            prediction,
-            self.dataset[instance_id],
-            self.cache_level,
-            self.clean,
-            self.force_rebuild,
-            run_id,
-            self.timeout,
-            namespace=self.namespace,
-            instance_image_tag=self.instance_image_tag,
-        )
-
-        # error patch
-        if result is None:
-            return reward
-
-        report = result[1]
-        # resolved/unresolved patch
-        if report[instance_id]["resolved"]:
-            reward = 1.0
-        return reward
 
     def _strip_proxy_helper(self, proxy_llm: LLM, rollout: Rollout) -> LLM:
         """Convert [`ProxyLLM`][agentlightning.ProxyLLM] instances into concrete LLMs.
@@ -223,7 +247,7 @@ async def cc_agent_dry_run_sample(
     adapter = LlmProxyTraceToAugmentedTriplet()
     store = LightningStoreServer(InMemoryLightningStore(), host="0.0.0.0", port=7654)
     llm_proxy = LLMProxy(
-        port=12358, store=store, callbacks=["return_token_ids", "opentelemetry", AddLogprobs, AddGreedySamplingParams]
+        port=12358, store=store, callbacks=["return_token_ids", "opentelemetry", AddLogprobs, AddSamplingParams]
     )
 
     await store.start()

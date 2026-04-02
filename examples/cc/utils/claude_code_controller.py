@@ -101,7 +101,7 @@ fi
         return
 
     def run_instance(
-        self, instance: dict, max_step: int = 40, timelimit: int = 30, run_method: Literal["python", "cli"] = "python"
+        self, instance: dict, max_step: int = 40, timelimit: int = 120, run_method: Literal["python", "cli"] = "python"
     ) -> AgentResult:
         """
         timelimit: in minute
@@ -123,6 +123,7 @@ fi
             "reproduction_file": reproduction_file,
             "model_name_or_path": "cc",
             "trajectory": traj,
+            "success": 0.0,
         }
         return return_value
 
