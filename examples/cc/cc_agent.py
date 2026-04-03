@@ -55,7 +55,7 @@ class CodingAgent(LitAgent):
         max_step: int = 5,
         run_method: Literal["python", "cli"] = "cli",
         tools: list[str] = ["Glob", "Grep", "Bash", "Read", "Edit", "Write", "TodoWrite", "WebFetch", "ExitPlanMode"],
-        user_prompt: str = "{description}",
+        user_prompt: str = "{description}. \n\nAllowed tools: {tools}",
         open_file_limit: int = 4096,
         cache_level: str = "env",  # ["none", "base", "env", "instance"]
         clean: bool = False,

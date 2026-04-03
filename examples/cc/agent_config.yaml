@@ -38,7 +38,8 @@ agent:
     (1) Do not delete reproduction.py at last because we still need it later.
     (2) Please do not commit your edits. We will do it later.
     (3) You should use `TodoWrite` tool to track whether you have done each of the 4 required steps above (Localization, Reproduction, Edit, Validation). Create a TodoWrite list at the beginning and update it when any of the 4 steps is completed.
-    (4) Each round of your response should contain one text output about your thinking AND exactly one tool call. If you want to submit your solution, output a text message without tool call, and the system will see this pure text output without tool call as submission. If you output a text message without tool call before you finish the task, the session would terminate early, so DO NOT do that.
+    (4) You should only use the allowed tools: {tools}.
+    (5) Each round of your response should contain one text output about your thinking AND exactly one tool call. If you want to submit your solution, output a text message without tool call, and the system will see this pure text output without tool call as submission. If you output a text message without tool call before you finish the task, the session would terminate early, so DO NOT do that.
 
 runtime:
   max_step: 40
