@@ -8,8 +8,8 @@ from typing import Any, TypedDict
 import uuid
 
 import unidiff
-from utils.docker_runtime import CommandResult, Runtime
-from utils.type import AgentResult, ClaudeCodeStep, ClaudeCodeTraj, TrajSlice
+from src.utils.docker_runtime import CommandResult, Runtime
+from src.utils.type import AgentResult, ClaudeCodeStep, ClaudeCodeTraj, TrajSlice
 
 
 class TajectoryProcessor:
@@ -706,8 +706,8 @@ def reward_test():
     from functools import partial
     import json, os
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from utils.docker_runtime import Runtime
-    from utils.logger import logger
+    from src.utils.docker_runtime import Runtime
+    from src.utils.logger import logger
 
     def proc_instance(sample: dict[str, Any], ds: dict[str, Any]) -> RewardEstimatorWholeSlice.ReturnType:
         instance_id = sample["instance_id"]

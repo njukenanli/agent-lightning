@@ -10,12 +10,12 @@ from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 import httpx
-from cc_agent import flatten_messages, load_dataset
+from src.cc_agent import flatten_messages, load_dataset
 from datasets import Dataset, DatasetDict
 from rich.console import Console
 from transformers import AutoTokenizer
-from utils.custom_adapter import LlmProxyTraceToAugmentedTriplet
-from utils.custom_callbacks import AddLogprobs
+from src.utils.custom_adapter import LlmProxyTraceToAugmentedTriplet
+from src.utils.custom_callbacks import AddLogprobs
 
 from agentlightning import configure_logger
 from agentlightning.adapter import LlmProxyTraceToTriplet

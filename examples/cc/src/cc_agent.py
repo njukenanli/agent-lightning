@@ -13,13 +13,13 @@ if platform.system() == "Linux":
 from datasets import Dataset
 from swebench.harness.utils import load_swebench_dataset
 from transformers import AutoTokenizer as AutoProcessor
-from utils.claude_code_controller import ClaudeController
-from utils.custom_adapter import LlmProxyTraceToAugmentedTriplet
-from utils.custom_callbacks import AddSamplingParams, AddLogprobs
-from utils.evaluation import evaluate
-from utils.logger import logger
-from utils.type import AgentResult, ClaudeCodeStep
-from utils.reward import RewardEstimatorWholeSlice
+from src.utils.claude_code_controller import ClaudeController
+from src.utils.custom_adapter import LlmProxyTraceToAugmentedTriplet
+from src.utils.custom_callbacks import AddSamplingParams, AddLogprobs
+from src.utils.evaluation import evaluate
+from src.utils.logger import logger
+from src.utils.type import AgentResult, ClaudeCodeStep
+from src.utils.reward import RewardEstimatorWholeSlice
 
 from agentlightning import (
     InMemoryLightningStore,

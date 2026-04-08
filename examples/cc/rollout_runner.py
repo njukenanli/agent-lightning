@@ -3,13 +3,13 @@ import multiprocessing
 from typing import Any, Dict
 
 import yaml
-from cc_agent import CodingAgent
+from src.cc_agent import CodingAgent
 from rich.console import Console
 
 from agentlightning import LitAgentRunner, configure_logger
 from agentlightning.store import LightningStore, LightningStoreClient
 from agentlightning.tracer import OtelTracer
-from examples.cc.utils.type import AgentConfig
+from src.utils.type import AgentConfig
 
 console = Console()
 

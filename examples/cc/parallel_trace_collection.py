@@ -2,14 +2,15 @@ import asyncio
 import time
 
 import yaml
-from algorithm import build_dataset, run_rollout
-from cc_agent import load_dataset
+from src.algorithm import build_dataset, run_rollout
+from src.cc_agent import load_dataset
 from transformers import AutoTokenizer
-from utils.custom_adapter import LlmProxyTraceToAugmentedTriplet
-from utils.custom_callbacks import AddSamplingParams, AddLogprobs
-from utils.response_validation_middleware import (
+from src.utils.custom_adapter import LlmProxyTraceToAugmentedTriplet
+from src.utils.custom_callbacks import AddSamplingParams, AddLogprobs
+from src.utils.response_validation_middleware import (
     ResponseValidationMiddleware,
     StepWarningMiddleware,
+    ToolSelectionMiddleware,
     set_allowed_tools,
     set_max_step,
 )
@@ -114,7 +115,7 @@ if __name__ == "__main__":
         callbacks=["return_token_ids", "opentelemetry", AddLogprobs, AddSamplingParams],
         # Custom middlewares are listed first so they are added first and thus run
         # innermost (closest to the backend), seeing raw non-streaming JSON.
-        middlewares=[StepWarningMiddleware, ResponseValidationMiddleware, "rollout_attempt", "stream_conversion"],
+        middlewares=[ToolSelectionMiddleware, StepWarningMiddleware, ResponseValidationMiddleware, "rollout_attempt", "stream_conversion"],
     )
     if args.access_host is not None:
         llm_proxy.server_launcher._access_host = args.access_host
