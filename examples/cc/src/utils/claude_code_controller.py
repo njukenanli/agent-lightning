@@ -1,10 +1,8 @@
 import json
-from functools import partial
-from typing import Literal
+from typing import Callable, Literal
 
 import dotenv
 from src.utils.docker_runtime import Runtime
-from src.utils.logger import logger
 from src.utils.reward import RewardEstimatorWholeSlice
 from src.utils.type import CC_ALL_TOOLS as all_tools
 from src.utils.type import AgentResult, ClaudeCodeStep, ClaudeCodeTraj
@@ -14,11 +12,11 @@ class ClaudeController:
     system_prompt = """You are an expert software engineer solving swebench bug fixing tasks."""
 
     def __init__(
-        self, image: str, instance: dict, run_id: str, tools: set, user_prompt: str, endpoint: str, api_key: str
+        self, image: str, instance: dict, logger: Callable, tools: set, user_prompt: str, endpoint: str, api_key: str
     ) -> None:
         self.image = image
         self.instance = instance
-        self.run_id = run_id
+        self.logger = logger
         self.endpoint = endpoint
         self.api_key = api_key
         self.container: Runtime = self.init_container(self.image, self.instance)
@@ -32,7 +30,7 @@ class ClaudeController:
         container = Runtime.start_session(
             image,
             instance,
-            log_function=partial(logger, run_id=self.run_id, instance_id=instance["instance_id"]),
+            log_function=self.logger
             platform="linux",
         )
         container.send_command("curl -fsSL https://claude.ai/install.sh | bash -s -- 2.0.65")

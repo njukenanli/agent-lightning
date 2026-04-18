@@ -1,4 +1,5 @@
 import asyncio
+from functools import partial
 import json
 import os
 import platform
@@ -19,7 +20,8 @@ from src.utils.custom_callbacks import AddSamplingParams, AddLogprobs
 from src.utils.evaluation import evaluate
 from src.utils.logger import logger
 from src.utils.type import AgentResult, ClaudeCodeStep
-from src.utils.reward import RewardEstimatorWholeSlice
+from src.utils.reward import RewardEstimatorWholeSlice as RewardEstimator
+from src.utils.docker_runtime import Runtime
 
 from agentlightning import (
     InMemoryLightningStore,
@@ -28,6 +30,7 @@ from agentlightning import (
     OtelTracer,
     configure_logger,
 )
+from agentlightning.emitter import emit_reward
 from agentlightning.litagent import LitAgent
 from agentlightning.llm_proxy import LLMProxy, ModelConfig
 from agentlightning.types import LLM, AttemptedRollout, NamedResources, ProxyLLM, Rollout, RolloutRawResult
@@ -86,10 +89,34 @@ class CodingAgent(LitAgent):
         if platform.system() == "Linux":
             resource.setrlimit(resource.RLIMIT_NOFILE, (open_file_limit, open_file_limit))
 
+    def _compute_and_emit_step_rewards(
+        self,
+        prediction: AgentResult,
+        container: Runtime,
+        gold_patch: str,
+        epoch: int,
+    ) -> RewardEstimator.ReturnType:
+        """Compute intermediate per-step rewards and emit them to the store.
+
+        Builds a reward dict keyed by ``"step_{i}_{action_type}"`` from the
+        ``steps`` field of the reward estimator output, then calls
+        ``emit_reward`` so the GPU side can retrieve them from spans.
+        """
+        intermediate_reward = RewardEstimator.intermediate_reward(prediction, container, gold_patch, epoch)
+        steps = intermediate_reward["steps"]
+        if steps:
+            reward_dict = {f"{idx}__{step[1]}": step[2] 
+                           for idx, step in enumerate(steps)}
+            last_step = steps[-1]
+            primary_key = f"{len(steps) - 1}__{last_step[1]}"
+            emit_reward(reward_dict, primary_key=primary_key)
+        return intermediate_reward
+
     async def rollout_async(
         self, task: Dict[str, Any], resources: NamedResources, rollout: Rollout
     ) -> RolloutRawResult:
         run_id = f"epoch_{task.get('epoch', 0)}"
+        sample_id = task['rollout_id']
         image = f"{self.namespace}/sweb.eval.x86_64.{task['instance_id'].lower()}".replace("__", "_1776_")
         reward = 0.0
 
@@ -97,11 +124,12 @@ class CodingAgent(LitAgent):
         assert llm is not None, "LLM resource is required for rollout."
 
         llm = self._strip_proxy_helper(llm, rollout)
+        sample_logger = partial(logger, run_id=run_id, instance_id=task["instance_id"], sample_id=sample_id),
         # 1. init container
         controller = ClaudeController(
             image,
             task,
-            run_id,
+            sample_logger,
             set(self.tools),
             self.user_prompt,
             llm.endpoint,
@@ -111,18 +139,12 @@ class CodingAgent(LitAgent):
         try:
             # 2. execute task
             prediction: AgentResult = controller.run_instance(task, max_step=self.max_step, run_method=self.run_method)
-            logger(run_id, task["instance_id"], json.dumps(prediction, indent=4))
+            sample_logger(text=json.dumps(prediction, indent=4))
 
             # 3. obtain rewards (evaluation result)
             # empty patch
             if (prediction["model_patch"] is None) or (not prediction["model_patch"].strip()):
-                intermediate_reward: RewardEstimatorWholeSlice.ReturnType = RewardEstimatorWholeSlice.intermediate_reward(
-                    prediction,
-                    controller.container,
-                    task["patch"],
-                    task.get('epoch', 0)
-                )
-                # todo: how to send intermediate_reward to GPU side?
+                self._compute_and_emit_step_rewards(prediction, controller.container, task["patch"], task.get("epoch", 0))
                 del controller
                 return reward
 
@@ -142,12 +164,7 @@ class CodingAgent(LitAgent):
 
             # error patch
             if result is None:
-                intermediate_reward: RewardEstimatorWholeSlice.ReturnType = RewardEstimatorWholeSlice.intermediate_reward(
-                    prediction,
-                    controller.container,
-                    task["patch"],
-                    task.get('epoch', 0)
-                )
+                self._compute_and_emit_step_rewards(prediction, controller.container, task["patch"], task.get("epoch", 0))
                 del controller
                 return reward
 
@@ -157,17 +174,11 @@ class CodingAgent(LitAgent):
                 reward = 1.0
                 prediction["success"] = 1.0
             
-            intermediate_reward: RewardEstimatorWholeSlice.ReturnType = RewardEstimatorWholeSlice.intermediate_reward(
-                prediction,
-                controller.container,
-                task["patch"],
-                task.get('epoch', 0)
-            )
-            # todo: how to send intermediate_reward to GPU side?
+            self._compute_and_emit_step_rewards(prediction, controller.container, task["patch"], task.get("epoch", 0))
             del controller
             return reward
         except Exception as e:
-            logger(run_id, task["instance_id"], f"Exception during rollout: {e}")
+            sample_logger(text=f"Exception during rollout: {e}")
             del controller # anyway, resource should be released...
             return reward
 

@@ -65,6 +65,7 @@ class ToolResultContent(TypedDict):
 
 
 class ClaudeCodeMessage(TypedDict):
+    id: str # one LLM response share the same id across text/tool responses
     type: str
     content: list[TextContent | ToolCallContent | ToolResultContent]
 

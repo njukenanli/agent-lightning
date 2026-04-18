@@ -26,16 +26,6 @@ logger = logging.getLogger(__name__)
 _allowed_tools: Optional[Set[str]] = None
 _max_step: Optional[int] = None
 
-SUBMIT_TOOL_NAME = "Submit"
-SUBMIT_TOOL_DEFINITION: Dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": SUBMIT_TOOL_NAME,
-        "description": "The Submit tool submits your current changes and terminates the dialogue.",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
-}
-
 
 def set_allowed_tools(tools: Set[str]) -> None:
     """Configure the allowed tool set for tool selection and response validation."""
@@ -56,20 +46,22 @@ class ToolSelectionMiddleware(BaseHTTPMiddleware):
     the synthetic *Submit* tool so the model can explicitly end the dialogue.
     """
 
+    SUBMIT_TOOL_DEFINITION: Dict[str, Any] = {
+        "type": "function",
+        "function": {
+            "name": "Submit",
+            "description": "The Submit tool submits your current changes and terminates the dialogue.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    }
+
     async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         if request.method != "POST":
             return await call_next(request)
 
-        path = request.url.path
-        if not (path.endswith("/chat/completions") or "/chat/completions?" in path):
-            return await call_next(request)
-
-        try:
-            req_body = json.loads(await request.body())
-            model: str = req_body.get("model", "")
-            if "haiku" in model.lower():
-                return await call_next(request)
-        except Exception:
+        req_body = json.loads(await request.body())
+        model: str = req_body.get("model", "")
+        if "haiku" in model.lower():
             return await call_next(request)
 
         tools: Optional[List[Dict[str, Any]]] = req_body.get("tools")
@@ -77,18 +69,15 @@ class ToolSelectionMiddleware(BaseHTTPMiddleware):
 
         if tools is not None and allowed is not None:
             filtered = [t for t in tools if t.get("function", {}).get("name", "") in allowed]
-            filtered.append(SUBMIT_TOOL_DEFINITION)
+            filtered.append(self.SUBMIT_TOOL_DEFINITION)
             req_body["tools"] = filtered
             logger.debug(
                 "ToolSelectionMiddleware: filtered tools from %d to %d (including Submit)",
                 len(tools),
                 len(filtered),
             )
-        elif tools is not None:
-            # No allowed-tools filter configured — just append Submit.
-            if not any(t.get("function", {}).get("name") == SUBMIT_TOOL_NAME for t in tools):
-                tools.append(SUBMIT_TOOL_DEFINITION)
-                req_body["tools"] = tools
+        else:
+            logger.error(f"tool call middleware has error: tools = {tools}; allowed = {allowed}.")
 
         modified_body = json.dumps(req_body).encode("utf-8")
         request._body = modified_body  # type: ignore[attr-defined]
@@ -115,17 +104,10 @@ class ResponseValidationMiddleware(BaseHTTPMiddleware):
         if request.method != "POST":
             return await call_next(request)
 
-        path = request.url.path
-        if not (path.endswith("/chat/completions") or "/chat/completions?" in path):
-            return await call_next(request)
-
         # Only validate responses for sonnet/opus models (the main agent), skip haiku.
-        try:
-            req_body = json.loads(await request.body())
-            model: str = req_body.get("model", "")
-            if "haiku" in model.lower():
-                return await call_next(request)
-        except Exception:
+        req_body = json.loads(await request.body())
+        model: str = req_body.get("model", "")
+        if "haiku" in model.lower():
             return await call_next(request)
 
         messages: List[Dict[str, Any]] = req_body.get("messages", [])
@@ -133,7 +115,7 @@ class ResponseValidationMiddleware(BaseHTTPMiddleware):
         # First LLM call.
         response = await call_next(request)
         body, data, action = await self._parse_and_validate(response)
-        if action is None:
+        if action is None: # means correct response 
             return Response(content=body, status_code=response.status_code, headers=dict(response.headers))
         if action == "submit":
             body = self._strip_tool_calls(data)
@@ -236,10 +218,17 @@ class ResponseValidationMiddleware(BaseHTTPMiddleware):
         * ``"submit"`` — model called *Submit*, should strip tool_calls.
         * Any other string — a retry observation to append and re-call the LLM.
         """
+        # No tool call at all — always retry.
+        if len(tool_calls) > 1:
+            return (
+                "Your response has multiple tool calls. "
+                "Please generate a response with exactly one tool call. "
+            )
+
         # Check for Submit tool call.
         if tool_calls:
             name = tool_calls[0].get("function", {}).get("name", "")
-            if name == SUBMIT_TOOL_NAME:
+            if name == "Submit":
                 logger.info("ResponseValidationMiddleware: model called Submit — forwarding as plain text.")
                 return "submit"
 
@@ -251,11 +240,11 @@ class ResponseValidationMiddleware(BaseHTTPMiddleware):
             )
 
         # No tool call at all — always retry.
-        if not tool_calls:
+        if not tool_calls and ("<tool_call>" not in content):
             return (
                 "Your last response does not contain a tool call. "
-                "You must either call a tool to continue working, or call the Submit tool "
-                "to submit your current changes and end the dialogue."
+                "You must either call a tool to continue working, or call the Submit tool to submit your current changes. "
+                "Generate a response with exactly one tool call. "
             )
 
         # Has a tool call — it's valid (tool filtering is handled by ToolSelectionMiddleware).
@@ -265,7 +254,7 @@ class ResponseValidationMiddleware(BaseHTTPMiddleware):
     def _strip_tool_calls(data: Optional[Dict[str, Any]]) -> bytes:
         """Remove ``tool_calls`` from the first choice's message and re-serialize."""
         if data and data.get("choices"):
-            message = data["choices"][0].get("message", {})
+            message: Dict[str, Any] = data["choices"][0].get("message", {})
             message.pop("tool_calls", None)
             # Ensure finish_reason reflects a normal stop, not a tool call.
             data["choices"][0]["finish_reason"] = "stop"
