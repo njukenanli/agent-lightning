@@ -156,7 +156,7 @@ class CodingAgent(LitAgent):
                 self.cache_level,
                 self.clean,
                 self.force_rebuild,
-                run_id,
+                f"{run_id}_{sample_id}", # to prevent container name conflict
                 self.timeout,
                 namespace=self.namespace,
                 instance_image_tag=self.instance_image_tag,
