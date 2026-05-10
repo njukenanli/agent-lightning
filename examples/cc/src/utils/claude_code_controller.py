@@ -30,7 +30,7 @@ class ClaudeController:
         container = Runtime.start_session(
             image,
             instance,
-            log_function=self.logger
+            log_function=self.logger,
             platform="linux",
         )
         container.send_command("curl -fsSL https://claude.ai/install.sh | bash -s -- 2.0.65")
@@ -54,7 +54,7 @@ class ClaudeController:
         self.container.send_command(heredoc_cmd)
 
         self.container.send_command("mkdir -p /testbed/.claude")
-        with open("utils/settings.template.json") as f:
+        with open("src/utils/settings.template.json") as f:
             setting = f.read()
         setting = setting.replace("<allowedTools>", self.allowed_tools).replace(
             "<excludedTools>", self.disallowed_tools

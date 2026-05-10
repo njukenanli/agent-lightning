@@ -124,7 +124,7 @@ class CodingAgent(LitAgent):
         assert llm is not None, "LLM resource is required for rollout."
 
         llm = self._strip_proxy_helper(llm, rollout)
-        sample_logger = partial(logger, run_id=run_id, instance_id=task["instance_id"], sample_id=sample_id),
+        sample_logger = partial(logger, run_id=run_id, instance_id=task["instance_id"], sample_id=sample_id)
         # 1. init container
         controller = ClaudeController(
             image,

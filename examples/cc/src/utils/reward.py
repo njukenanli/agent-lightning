@@ -506,6 +506,8 @@ class RewardEstimatorWholeSlice(BaseRewardEstimator):
             step = slice["content"][step_id]
             if step.get("message", None) is None:
                 continue
+            if step_id + 1 >= len(slice["content"]) or slice["content"][step_id + 1].get("message", None) is None:
+                continue
             if (
                 step["message"]["content"][0]["type"] == "tool_use"
                 and step["message"]["content"][0]["name"].lower() == "edit"
@@ -551,7 +553,6 @@ class RewardEstimatorWholeSlice(BaseRewardEstimator):
         old_sim: float = self.code_similarity(self.sorted_added_lines, old_added_lines)
         new_sim: float = self.code_similarity(self.sorted_added_lines, new_added_lines)
         reward = new_sim - old_sim
-        print(reward)
         return {
             "keysteps": keysteps,
             "reward": reward,
@@ -567,6 +568,8 @@ class RewardEstimatorWholeSlice(BaseRewardEstimator):
         for step_id in range(len(slice["content"])):
             step = slice["content"][step_id]
             if step.get("message", None) is None:
+                continue
+            if step_id + 1 >= len(slice["content"]) or slice["content"][step_id + 1].get("message", None) is None:
                 continue
             if (
                 step["message"]["content"][0]["type"] == "tool_use"
