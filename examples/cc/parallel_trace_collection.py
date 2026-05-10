@@ -115,7 +115,10 @@ if __name__ == "__main__":
         callbacks=["return_token_ids", "opentelemetry", AddLogprobs, AddSamplingParams],
         # Custom middlewares are listed first so they are added first and thus run
         # innermost (closest to the backend), seeing raw non-streaming JSON.
-        middlewares=[ToolSelectionMiddleware, StepWarningMiddleware, ResponseValidationMiddleware, "rollout_attempt", "stream_conversion"],
+        middlewares=[ToolSelectionMiddleware, 
+        #StepWarningMiddleware, 
+        ResponseValidationMiddleware, 
+        "rollout_attempt", "stream_conversion"],
     )
     if args.access_host is not None:
         llm_proxy.server_launcher._access_host = args.access_host

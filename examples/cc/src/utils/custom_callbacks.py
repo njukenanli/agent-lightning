@@ -56,6 +56,7 @@ class AddSamplingParams(CustomLogger):
             return e
 
         # reference: https://arxiv.org/pdf/2508.03501
+        # this means make temperature=1 while disabling all other sampling params.
         return {
             **data,
             "temperature": 1.0,

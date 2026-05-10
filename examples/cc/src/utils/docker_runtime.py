@@ -409,7 +409,7 @@ if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
         output, metadata = self._read_raw_output(timeout=timeout)
         if metadata is not None:
             result = CommandResult(output=output, metadata=metadata)
-            self.logger(text=result.output)
+            self.logger(text=result.to_observation(False))
             return result
 
         # handle timeout
@@ -419,6 +419,7 @@ if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
         kill_output, kill_metadata = self._read_raw_output(timeout=kill_timeout)
 
         output = output + kill_output + "\n**Exited due to timeout**\n"
+        self.logger(text=output)
         if kill_metadata is not None:
             kill_metadata.exit_code = TIMEOUT_EXIT_CODE
             return CommandResult(output=output, metadata=kill_metadata)
@@ -428,7 +429,6 @@ if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
         )
 
         result = CommandResult(output=output, metadata=fallback_metadata)
-        self.logger(text=result.output)
         return result
 
     def copy_to_container(self, src: str, dest: str) -> None:
@@ -555,7 +555,6 @@ if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
         # which operating system this code is running on, note windows can run linux containers, so engine_os != (container) platform
         extra_hosts = {"host.docker.internal": "host-gateway"} if "linux" in engine_os else None
 
-        os.makedirs(os.path.join(os.getcwd(), "logs", "tmp"), exist_ok=True)
         if platform == "windows":
             shell_command = r"powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -NoExit"
             working_dir = r"C:\testbed"
@@ -583,12 +582,6 @@ if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
             },
             working_dir=working_dir,
             extra_hosts=extra_hosts,
-            volumes={
-                os.path.join(os.getcwd(), "logs", "tmp"): {
-                    "bind": os.path.join(working_dir, "mnt_tmp"),
-                    "mode": "rw",
-                }
-            },
             network_mode="host",
             **run_kwargs,
         )

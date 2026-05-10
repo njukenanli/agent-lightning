@@ -290,10 +290,6 @@ class StepWarningMiddleware(BaseHTTPMiddleware):
         if request.method != "POST":
             return await call_next(request)
 
-        path = request.url.path
-        if not (path.endswith("/chat/completions") or "/chat/completions?" in path):
-            return await call_next(request)
-
         max_step = _max_step
         if max_step is None:
             return await call_next(request)

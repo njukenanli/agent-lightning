@@ -58,7 +58,7 @@ class CodingAgent(LitAgent):
         max_step: int = 5,
         run_method: Literal["python", "cli"] = "cli",
         tools: list[str] = ["Glob", "Grep", "Bash", "Read", "Edit", "Write", "TodoWrite", "WebFetch", "ExitPlanMode"],
-        user_prompt: str = "{description}. \n\nAllowed tools: {tools}",
+        user_prompt: str = "{description}. \n\nMax step limit: {max_step}",
         open_file_limit: int = 4096,
         cache_level: str = "env",  # ["none", "base", "env", "instance"]
         clean: bool = False,
@@ -144,7 +144,8 @@ class CodingAgent(LitAgent):
             # 3. obtain rewards (evaluation result)
             # empty patch
             if (prediction["model_patch"] is None) or (not prediction["model_patch"].strip()):
-                self._compute_and_emit_step_rewards(prediction, controller.container, task["patch"], task.get("epoch", 0))
+                intermediate_reward = self._compute_and_emit_step_rewards(prediction, controller.container, task["patch"], task.get("epoch", 0))
+                sample_logger(text=json.dumps(intermediate_reward, indent=4))
                 del controller
                 return reward
 
@@ -164,7 +165,8 @@ class CodingAgent(LitAgent):
 
             # error patch
             if result is None:
-                self._compute_and_emit_step_rewards(prediction, controller.container, task["patch"], task.get("epoch", 0))
+                intermediate_reward = self._compute_and_emit_step_rewards(prediction, controller.container, task["patch"], task.get("epoch", 0))
+                sample_logger(text=json.dumps(intermediate_reward, indent=4))
                 del controller
                 return reward
 
@@ -174,11 +176,13 @@ class CodingAgent(LitAgent):
                 reward = 1.0
                 prediction["success"] = 1.0
             
-            self._compute_and_emit_step_rewards(prediction, controller.container, task["patch"], task.get("epoch", 0))
+            intermediate_reward = self._compute_and_emit_step_rewards(prediction, controller.container, task["patch"], task.get("epoch", 0))
+            sample_logger(text=json.dumps(intermediate_reward, indent=4))
             del controller
             return reward
         except Exception as e:
-            sample_logger(text=f"Exception during rollout: {e}")
+            from traceback import format_exc
+            sample_logger(text=f"Exception during rollout: {e}\n{format_exc()}")
             del controller # anyway, resource should be released...
             return reward
 

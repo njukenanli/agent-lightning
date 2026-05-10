@@ -347,12 +347,6 @@ with open("{file_path}", "w", encoding="utf-8") as f:
             if msg_id in indices.keys():
                 res.extend(indices[msg_id])
         return res
-    
-    @staticmethod
-    def save_res(epoch: int, instance_id: str, processed_res: BaseRewardEstimator.ReturnType):
-        os.makedirs(f"logs/result/epoch_{epoch}", exist_ok=True)
-        with open(f"logs/result/epoch_{epoch}/{instance_id}.json", "w") as f:
-            json.dump(processed_res,f,indent=True)
 
 
 class RewardEstimatorWholeSlice(BaseRewardEstimator):
@@ -764,7 +758,7 @@ class RewardEstimatorWholeSlice(BaseRewardEstimator):
                                 result["model_patch"],
                                 gold_patch)
         processed_res = reward_estimator.main(result["trajectory"], success=result["success"])
-        reward_estimator.save_res(epoch, instance_id, processed_res)
+
         return processed_res
 
 class RewardEstimatorWholeTraj(RewardEstimatorWholeSlice):
@@ -853,7 +847,7 @@ class RewardEstimatorWholeTraj(RewardEstimatorWholeSlice):
                                 result["model_patch"],
                                 gold_patch)
         processed_res = reward_estimator.main(result["trajectory"], success=result["success"])
-        reward_estimator.save_res(epoch, instance_id, processed_res)
+
         return processed_res
 
 
